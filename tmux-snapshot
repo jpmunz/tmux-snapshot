@@ -1,0 +1,140 @@
+#!/usr/bin/python
+
+import subprocess
+import argparse
+import json
+import os
+
+SESSION_STORE = '~/tmux-sessions'
+
+PANE_ATTRIBUTES = [
+    'window_index',
+    'pane_index',
+    'pane_width',
+    'pane_height',
+    'pane_current_path',
+    'pane_pid',
+    'pane_active',
+]
+
+WINDOW_ATTRIBUTES = [
+    'window_name',
+    'window_layout',
+    'window_width',
+    'window_height',
+    'window_index',
+    'window_active',
+]
+
+
+def tmux_output(command):
+    return subprocess.check_output("tmux %s" % command, shell=True).strip()
+
+def tmux(command):
+    print "tmux %s" % command
+    return subprocess.call("tmux %s" % command, shell=True)
+
+def save(args, session_store=None):
+    try:
+        session_output = tmux_output("list-sessions -F '#{session_name}'").split('\n')
+    except subprocess.CalledProcessError:
+        print "No currently running sessions"
+        return
+
+    for session_name in session_output:
+        windows = []
+
+        format_string = ' '.join("{0}:#{{{0}}}".format(win_attribute) for win_attribute in WINDOW_ATTRIBUTES)
+        windows_output = tmux_output("list-windows -t %s -F '%s'" % (session_name, format_string)).split('\n')
+        for window_output in windows_output:
+            window = {}
+            for attribute in window_output.split(' '):
+                key, _, value = attribute.partition(':')
+                window[key] = value
+            window['panes'] = []
+
+            windows.append(window)
+
+        format_string = ' '.join("{0}:#{{{0}}}".format(pane_attribute) for pane_attribute in PANE_ATTRIBUTES)
+        panes_output = tmux_output("list-panes -t %s -s -F '%s'" % (session_name, format_string)).split('\n')
+        for pane_output in panes_output:
+            pane = {}
+            for attribute in pane_output.split(' '):
+                key, _, value = attribute.partition(':')
+                pane[key] = value
+
+            window = windows[int(pane['window_index'])]
+            if int(pane['pane_active']):
+                window['active_pane_index'] = pane['pane_index']
+            try:
+                pane['pane_cmd'] = subprocess.check_output('ps --no-headers -o cmd --ppid %s' % pane['pane_pid'], shell=True).strip()
+            except subprocess.CalledProcessError:
+                pane['pane_cmd'] = None
+
+            window['panes'].append(pane)
+
+        if not os.path.exists(session_store):
+            os.makedirs(session_store)
+
+        with file(os.path.join(session_store, session_name), 'wb') as f:
+            f.write(json.dumps(windows))
+
+def _reload_windows(session_file, session_name):
+    with file(session_file, 'r') as f:
+        windows = json.loads(f.read())
+
+        for i, window in enumerate(windows):
+            panes = window['panes']
+
+            # Initialize the pane in the current directory with the previously running cmd
+            if i == 0:
+                tmux("new-session -d -s %s -x %s -y %s" % (session_name, window['window_width'], window['window_height']))
+
+            tmux("new-window -t %s -c \"%s\" -a -n %s \"%s\"" % (session_name, panes[0]['pane_current_path'], window['window_name'], panes[0]['pane_cmd'] or ""))
+
+            if i == 0:
+               # kill the first window
+                tmux("kill-window -t %s:%s" % (session_name, 1))
+
+            for pane in panes[1:]:
+                tmux("split-window -h -c \"%s\" -t %s \"%s\"" % (pane['pane_current_path'], session_name, pane['pane_cmd'] or ""))
+
+            tmux('select-layout -t %s:%s %s' % (session_name, window['window_index'], window['window_layout']))
+            tmux('select-pane -t %s:%s.%s' % (session_name, window['window_index'], window['active_pane_index']))
+
+            if int(window['window_active']):
+                active_window_index = window['window_index']
+
+
+        tmux("select-window -t %s:%s" % (session_name, active_window_index))
+
+def restore(args, session_store=None):
+    session_name = args.session_name
+    no_session = tmux("has-session -t %s" % session_name)
+
+    if no_session:
+        session_file = os.path.join(session_store, session_name)
+        if os.path.exists(session_file):
+            _reload_windows(session_file, session_name)
+
+    tmux("attach -t %s" % session_name)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="save and restore tmux sessions")
+    parser.add_argument('-d', '--dir', help='Directory to store the session snapshots', default=SESSION_STORE)
+    subparsers = parser.add_subparsers()
+
+    save_parser = subparsers.add_parser('save', help='Saves all current tmux sessions')
+    save_parser.set_defaults(func=save)
+
+    restore_parser = subparsers.add_parser('restore', help='Restores the a tmux session or creates a new one')
+    restore_parser.add_argument('session_name')
+    restore_parser.set_defaults(func=restore)
+
+    args = parser.parse_args()
+    session_store = os.path.expanduser(args.dir)
+    args.func(args, session_store=session_store)
+
+if __name__ == '__main__':
+    main()
