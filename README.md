@@ -9,4 +9,4 @@ Working directories and last executed commands are remembered, history is not pr
 
 Common use-case is to have a crontab entry to continually save open sessions so that they can be restored after a reboot:
 
-*   *   *   *   *   tmux-snapshot save
+`*   *   *   *   *   tmux-snapshot save`

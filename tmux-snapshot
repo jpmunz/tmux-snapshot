@@ -38,13 +38,13 @@ def _store_tmux_attributes(cmd, attributes):
     output = tmux_output("%s -F '%s'" % (cmd, format_string)).split('\n')
 
     items = []
-    for item in output:
-        mapping = {}
-        for attribute in window_output.split(' '):
+    for item_output in output:
+        item = {}
+        for attribute in item_output.split(' '):
             key, _, value = attribute.partition(':')
-            mapping[key] = value
+            item[key] = value
 
-        items.append(mapping)
+        items.append(item)
 
     return items
 
@@ -56,14 +56,16 @@ def save(args, session_store=None):
         return
 
     for session_name in session_output:
-        windows = _store_tmux_attributes('list-windows -t %s' % session_name)
+        windows = _store_tmux_attributes('list-windows -t %s' % session_name, WINDOW_ATTRIBUTES)
         for window in windows:
             window['panes'] = []
 
-        panes = _store_tmux_attributes('list-panes -t %s -s' % session_name)
+        window_mapping = dict([(window['window_index'], window) for window in windows])
+
+        panes = _store_tmux_attributes('list-panes -t %s -s' % session_name, PANE_ATTRIBUTES)
         for pane in panes:
 
-            pane_window = windows[int(pane['window_index'])]
+            pane_window = window_mapping[pane['window_index']]
             if int(pane['pane_active']):
                 pane_window['active_pane_index'] = pane['pane_index']
 
@@ -88,13 +90,13 @@ def _session_from_json(windows, session_name):
 
         # Create the window, need to make the session itself if it's the first window
         if i == 0:
-            tmux("new-session -d -s %s -x %s -y %s" % (session_name, window['window_width'], window['window_height']))
+            tmux("new-session -d -s %s -n %s -x %s -y %s" % (session_name, '_temp', window['window_width'], window['window_height']))
 
         tmux("new-window -t %s -c \"%s\" -a -n %s \"%s\"" % (session_name, panes[0]['pane_current_path'], window['window_name'], panes[0]['pane_cmd'] or ""))
 
         # new-session creates its own window so remove it now
         if i == 0:
-            tmux("kill-window -t %s:%s" % (session_name, 1))
+            tmux("kill-window -t %s:_temp" % session_name)
 
         # Going to set the layout after so it doesn't matter how we split panes here
         for pane in panes[1:]:
